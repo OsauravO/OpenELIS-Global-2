@@ -21,8 +21,10 @@ import {
   SelectItem,
   Loading,
   Link,
+  FileUploader,
 } from "@carbon/react";
 import { Copy, ArrowLeft, ArrowRight } from "@carbon/icons-react";
+import { Launch } from "@carbon/icons-react";
 import CustomLabNumberInput from "../common/CustomLabNumberInput";
 import DataTable from "react-data-table-component";
 import { Formik, Field } from "formik";
@@ -1246,7 +1248,48 @@ export function SearchResults(props) {
     }
   };
 
-  const renderReferral = ({ data }) => (
+  const toBase64 = (file) =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+    });
+  const renderReferral = ({ data }) => {
+    const handleFileView = (fileData) => {
+      try {
+        if (!fileData?.base64 || !fileData?.type) return;
+        
+        const dataUrl = `data:${fileData.type};base64,${fileData.base64}`;
+        const win = window.open();
+        
+        if (fileData.type === 'application/pdf') {
+          win.document.write(`
+            <iframe 
+              src="${dataUrl}" 
+              style="width:100%; height:100vh; border:none;"
+            ></iframe>
+          `);
+        } else {
+          win.document.write(`
+            <img 
+              src="${dataUrl}" 
+              style="max-width:100%; max-height:100vh;"
+              onerror="this.onerror=null;this.style.display='none'"
+            />
+          `);
+        }
+      } catch (error) {
+        console.error("File view failed:", error);
+        addNotification({
+          title: intl.formatMessage({ id: "notification.title" }),
+          message: error.message,
+          kind: NotificationKinds.error
+        });
+        setNotificationVisible(true);
+      }
+    };
+    return (
     <>
       <Grid>
         <Column lg={2}>
@@ -1352,9 +1395,64 @@ export function SearchResults(props) {
             disallowFutureDate={true}
           />
         </Column>
+        <Column lg={3} md={1} sm={2}>
+          <FileUploader
+            style={{ marginTop: "-10px" }}
+            buttonLabel={<FormattedMessage id="label.button.uploadfile" />}
+            iconDescription="file upload"
+            multiple={false}
+            accept={["image/jpeg", "image/png", "application/pdf"]}
+            disabled={false}
+            buttonKind="primary"
+            size="lg"
+            filenameStatus="edit"
+            onChange={async (e) => {
+              e.preventDefault();
+              let file = e.target.files[0];
+              if (file) {
+                const base64 = await toBase64(file);
+                const updatedResults = props.results.testResult.map((item) => {
+                  if (item.id === data.id) {
+                    return {
+                      ...item,
+                      fileData: {
+                        base64: base64.split(',')[1], // Remove data URL prefix
+                        type: file.type
+                      }
+                    };
+                  }
+                  return item;
+                });
+                props.setResultForm({ ...props.results, testResult: updatedResults });
+              }
+            }}
+            onDelete={() => {
+              const updatedResults = props.results.testResult.map((item) => {
+                if (item.id === data.id) {
+                  const newItem = { ...item };
+                  delete newItem.fileData;
+                  return newItem;
+                }
+                return item;
+              });
+              props.setResultForm({ ...props.results, testResult: updatedResults });
+            }}
+          />
+          {data.fileData?.base64 && (
+            <Button
+              kind="ghost"
+              onClick={() => handleFileView(data.fileData)}
+              style={{ marginTop: '8px' }}
+            >
+              <Launch /> 
+              <FormattedMessage id="label.button.viewfile" />
+            </Button>
+          )}
+        </Column>
       </Grid>
     </>
-  );
+    );
+};
   const validateResults = (e, rowId) => {
     console.debug("validateResults:" + e.target.value);
     // e.target.value;
@@ -1584,15 +1682,33 @@ export function SearchResults(props) {
     setIsSubmitting(true);
     values.status = saveStatus;
     var searchEndPoint = "/rest/LogbookResults";
-    props.results.testResult.forEach((result) => {
+  
+    // Move temp file data to final state
+    const updatedResults = props.results.testResult.map((result) => {
+      if (tempFileData[result.id]) {
+        return {
+          ...result,
+          fileData: tempFileData[result.id], // Add file data to the result
+        };
+      }
+      return result;
+    });
+  
+    // Update reportable and remove unnecessary fields
+    updatedResults.forEach((result) => {
       result.reportable = result.reportable === "N" ? false : true;
       delete result.result;
     });
+  
+    // Submit the updated results
     postToOpenElisServerJsonResponse(
       searchEndPoint,
-      JSON.stringify(props.results),
+      JSON.stringify({ ...props.results, testResult: updatedResults }),
       setResponse,
     );
+  
+    // Clear temporary file data after submission
+    setTempFileData({});
   };
 
   const setResponse = (resp) => {
